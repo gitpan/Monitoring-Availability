@@ -1,5 +1,16 @@
 Revision history for Perl extension Monitoring::Availability.
 
+0.06  Sun Jan 24 00:29:06 CET 2010
+    - fixed initial states 'current'
+
+0.05  Thu Jan 21 22:05:16 CET 2010
+    - fixed reports when logfiles are totally out of report range
+    - changed the way of settings options
+    - added new option services_inherit_hostdowntimes
+    - added new option timeformat which is used for log output
+    - moved logfile parsing to extra module
+    - fixed initialassumedservicestate
+
 0.04  Mon Jan 18 08:06:59 CET 2010
     - added message when passing wrong services
 

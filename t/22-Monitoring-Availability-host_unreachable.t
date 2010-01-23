@@ -6,6 +6,11 @@ use strict;
 use Test::More tests => 3;
 use Data::Dumper;
 
+BEGIN {
+    require 't/00_test_utils.pm';
+    import TestUtils;
+}
+
 use_ok('Monitoring::Availability');
 
 #########################
@@ -35,34 +40,15 @@ my $expected = {
 };
 
 #########################
-# create a logger object if we have log4perl installed
-my $logger;
-eval {
-    if(defined $ENV{'TEST_LOG'}) {
-        use Log::Log4perl qw(:easy);
-        Log::Log4perl->easy_init($DEBUG);
-        Log::Log4perl->init(\ q{
-            log4perl.logger                    = DEBUG, Screen
-            log4perl.appender.Screen           = Log::Log4perl::Appender::ScreenColoredLevels
-            log4perl.appender.Screen.stderr    = 1
-            log4perl.appender.Screen.Threshold = DEBUG
-            log4perl.appender.Screen.layout    = Log::Log4perl::Layout::PatternLayout
-            log4perl.appender.Screen.layout.ConversionPattern = [%d] %m%n
-        });
-        $logger = get_logger();
-    }
-};
-
-#########################
 my $ma = Monitoring::Availability->new(
     'verbose'                       => 1,
     'logger'                        => $logger,
     'backtrack'                     => 4,
     'assumestateretention'          => 'yes',
     'assumeinitialstates'           => 'yes',
-    'assumestatesduringnotrunning'  => 0,
-    'initialassumedhoststate'       => 0,
-    'initialassumedservicestate'    => 0,
+    'assumestatesduringnotrunning'  => 'no',
+    'initialassumedhoststate'       => 'unspecified',
+    'initialassumedservicestate'    => 'unspecified',
 );
 isa_ok($ma, 'Monitoring::Availability', 'create new Monitoring::Availability object');
 my $result = $ma->calculate(
