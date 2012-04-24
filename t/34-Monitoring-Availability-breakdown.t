@@ -3,13 +3,22 @@
 #########################
 
 use strict;
-use Test::More tests => 3;
+use Test::More;
 use Data::Dumper;
 
 # checks against localtime will fail otherwise
+use POSIX qw(tzset);
 $ENV{'TZ'} = "CET";
+POSIX::tzset();
 
 BEGIN {
+    if( $^O eq 'MSWin32' ) {
+        plan skip_all => 'windows is not supported';
+    }
+    else {
+        plan tests => 3;
+    }
+
     require 't/00_test_utils.pm';
     import TestUtils;
 }
