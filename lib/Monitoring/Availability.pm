@@ -8,13 +8,13 @@ use Carp;
 use POSIX qw(strftime mktime);
 use Monitoring::Availability::Logs;
 
-our $VERSION = '0.27_2';
+our $VERSION = '0.27_3';
 
 
 =head1 NAME
 
 Monitoring::Availability - Calculate Availability Data from
-Nagios and Icinga Logfiles.
+Nagios / Icinga and Shinken Logfiles.
 
 =head1 SYNOPSIS
 
@@ -1498,7 +1498,7 @@ sub _set_breakpoints {
     my $cur = $self->{'report_options'}->{'start'};
     # round to next 0:00
     my($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($cur);
-    $cur = mktime(0, 0, 0, $mday, $mon, $year) + 86400;
+    $cur = mktime(0, 0, 0, $mday, $mon, $year, $wday, $yday, $isdst) + 86400;
     while($cur < $self->{'report_options'}->{'end'}) {
         push @{$self->{'breakpoints'}}, $cur;
         $cur = $cur + 86400;
