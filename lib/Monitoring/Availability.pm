@@ -8,7 +8,7 @@ use Carp;
 use POSIX qw(strftime mktime);
 use Monitoring::Availability::Logs;
 
-our $VERSION = '0.27_3';
+our $VERSION = '0.28';
 
 
 =head1 NAME
@@ -1247,7 +1247,10 @@ sub _verify_options {
 
     # set breakdown
     if(defined $options->{'breakdown'}) {
-        if(lc $options->{'breakdown'} eq 'months') {
+        if(lc $options->{'breakdown'} eq '') {
+            $options->{'breakdown'} = BREAK_NONE;
+        }
+        elsif(lc $options->{'breakdown'} eq 'months') {
             $options->{'breakdown'} = BREAK_MONTHS;
         }
         elsif(lc $options->{'breakdown'} eq 'weeks') {
