@@ -8,7 +8,7 @@ use Carp;
 use POSIX qw(strftime mktime);
 use Monitoring::Availability::Logs;
 
-our $VERSION = '0.32';
+our $VERSION = '0.34';
 
 
 =head1 NAME
@@ -533,11 +533,11 @@ sub _compute_for_data {
                         'log'         => {
                             'start'         => $self->{'report_options'}->{'end'},
                         },
-        );
+        ) unless defined $data->{'fake'};
     }
 
     # now process the real line
-    $self->_process_log_line($result, $data);
+    $self->_process_log_line($result, $data) unless defined $data->{'fake'};
 
     return 1;
 }
@@ -554,9 +554,16 @@ sub _compute_availability_on_the_fly {
         $self->_log('_compute_availability_on_the_fly() report end:   '.(scalar localtime $self->{'report_options'}->{'end'}));
     }
 
+    my $last_time = -1;
+    if(scalar @{$logs} == 0) {
+        $self->_compute_for_data(-1,
+                                 {time => $self->{'report_options'}->{'end'}, fake => 1},
+                                 $result);
+        $last_time = $self->{'report_options'}->{'end'};
+    }
+
     # process all log lines we got
     # make sure our logs are sorted by time
-    my $last_time = -1;
     for my $data ( sort { $a->{'time'} <=> $b->{'time'} } @{$logs} ) {
 
         $self->_compute_for_data($last_time,
@@ -1332,7 +1339,9 @@ sub _calculate_log {
         elsif($first_state == STATE_UNKNOWN)  { $type = 'UNKNOWN'; }
         elsif($first_state == STATE_CRITICAL) { $type = 'CRITICAL'; }
         my $fake_start = $self->{'report_options'}->{'start'};
-        if($fake_start >= $self->{'full_log_store'}->[0]->{'log'}->{'start'}) { $fake_start = $self->{'full_log_store'}->[0]->{'log'}->{'start'} - 1; }
+        if(defined $self->{'full_log_store'}->[0]) {
+            if($fake_start >= $self->{'full_log_store'}->[0]->{'log'}->{'start'}) { $fake_start = $self->{'full_log_store'}->[0]->{'log'}->{'start'} - 1; }
+        }
         my $fakelog = {
             'log' => {
                 'type'          => 'SERVICE '.$type.' (HARD)',
