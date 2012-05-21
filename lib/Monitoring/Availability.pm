@@ -8,7 +8,7 @@ use Carp;
 use POSIX qw(strftime mktime);
 use Monitoring::Availability::Logs;
 
-our $VERSION = '0.34';
+our $VERSION = '0.36';
 
 
 =head1 NAME
@@ -178,7 +178,24 @@ sub new {
         '3'           => STATE_UNKNOWN,
     };
 
+    # allow setting debug mode from env
+    if(defined $ENV{'MONITORING_AVAILABILITY_DEBUG'}) {
+        $self->{'verbose'} = 1;
+    }
+
+    # init log4perl, may require additional modules
+    if($self->{'verbose'} and !defined $self->{'logger'}) {
+        require Log::Log4perl;
+        Log::Log4perl->import(qw(:easy));
+        Log::Log4perl->easy_init({
+            level   => 'DEBUG',
+            file    => ">/tmp/Monitoring-Availability-Debug.log"
+        });
+        $self->{'logger'} = get_logger();
+    }
+
     $self->_log('initialized '.$class) if $self->{'verbose'};
+    $self->_log($self)                 if $self->{'verbose'};
 
     return $self;
 }
@@ -222,6 +239,10 @@ Array with logs from a livestatus query
 
  a sample query could be:
  selectall_arrayref(GET logs...\nColumns: time type options, {Slice => 1})
+
+=item log_iterator
+
+ Iterator object for logentry objects. For example a L<MongoDB::Cursor> object.
 
 =item hosts
 
@@ -277,6 +298,7 @@ sub calculate {
         'log_livestatus'                 => undef,   # logs from a livestatus query
         'log_file'                       => undef,   # logs from a file
         'log_dir'                        => undef,   # logs from a dir
+        'log_iterator'                   => undef,   # logs from a iterator object
         'rpttimeperiod'                  => $self->{'rpttimeperiod'} || '',
         'assumeinitialstates'            => $self->{'assumeinitialstates'},
         'assumestateretention'           => $self->{'assumestateretention'},
@@ -289,7 +311,8 @@ sub calculate {
         'timeformat'                     => $self->{'timeformat'},
         'breakdown'                      => $self->{'breakdown'},
     };
-    $self->_log('calculate()') if $self->{'verbose'};
+    $self->_log('calculate()')             if $self->{'verbose'};
+    $self->_log($self->{'report_options'}) if $self->{'verbose'};
     my $result;
 
     for my $opt_key (keys %opts) {
@@ -337,12 +360,12 @@ sub calculate {
         $self->{'report_options'}->{'calc_all'} = TRUE;
     }
 
+    $self->_set_breakpoints();
+
     unless($self->{'report_options'}->{'calc_all'}) {
         $self->_set_empty_hosts($result);
         $self->_set_empty_services($result);
     }
-
-    $self->_set_breakpoints();
 
     # read in logs
     if(defined $self->{'report_options'}->{'log_string'} or $self->{'report_options'}->{'log_file'} or $self->{'report_options'}->{'log_dir'}) {
@@ -356,6 +379,9 @@ sub calculate {
     }
     elsif(defined $self->{'report_options'}->{'log_livestatus'}) {
         $self->_compute_availability_on_the_fly($result, $self->{'report_options'}->{'log_livestatus'});
+    }
+    elsif(defined $self->{'report_options'}->{'log_iterator'}) {
+        $self->_compute_availability_from_iterator($result, $self->{'report_options'}->{'log_iterator'});
     }
 
     return($result);
@@ -515,8 +541,8 @@ sub _compute_for_data {
     # if we passed a breakdown point, insert fake event
     if($self->{'report_options'}->{'breakdown'} != BREAK_NONE) {
         my $breakpoint = $self->{'breakpoints'}->[0];
-        while(defined $breakpoint and $last_time < $breakpoint and $data->{'time'} > $breakpoint) {
-            $self->_log('_compute_for_data(): inserted breakpoint: '.$breakpoint);
+        while(defined $breakpoint and $last_time < $breakpoint and $data->{'time'} >= $breakpoint) {
+            $self->_log('_compute_for_data(): inserted breakpoint: '.$breakpoint." (".scalar localtime($breakpoint).")") if $self->{'verbose'};
             $self->_insert_fake_event($result, $breakpoint);
             shift(@{$self->{'breakpoints'}});
             $breakpoint = $self->{'breakpoints'}->[0];
@@ -541,6 +567,47 @@ sub _compute_for_data {
 
     return 1;
 }
+
+
+########################################
+sub _compute_availability_from_iterator {
+    my $self    = shift;
+    my $result  = shift;
+    my $logs    = shift;
+
+    if($self->{'verbose'}) {
+        $self->_log('_compute_availability_from_iterator()');
+        $self->_log('_compute_availability_from_iterator() report start: '.(scalar localtime $self->{'report_options'}->{'start'}));
+        $self->_log('_compute_availability_from_iterator() report end:   '.(scalar localtime $self->{'report_options'}->{'end'}));
+    }
+
+    my $last_time = -1;
+    # no logs at all?
+    unless($logs->has_next) {
+        $self->_compute_for_data(-1,
+                                 {time => $self->{'report_options'}->{'end'}, fake => 1},
+                                 $result);
+        $last_time = $self->{'report_options'}->{'end'};
+    }
+
+    # process all log lines we got
+    # logs should be sorted already
+    while(my $data = $logs->next) {
+        $self->_compute_for_data($last_time,
+                                 Monitoring::Availability::Logs->_parse_livestatus_entry($data),
+                                 $result);
+
+        # set timestamp of last log line
+        $last_time = $data->{'time'};
+    }
+
+    # processing logfiles finished
+
+    $self->_add_last_time_event($last_time, $result);
+
+    return 1;
+}
+
 
 ########################################
 sub _compute_availability_on_the_fly {
@@ -628,6 +695,16 @@ sub _add_last_time_event {
         $self->_insert_fake_event($result, $self->{'report_options'}->{'start'});
     }
 
+    # breakpoints left?
+    my $breakpoint = $self->{'breakpoints'}->[0];
+    while(defined $breakpoint) {
+        $self->_log('_add_last_time_event(): inserted breakpoint: '.$breakpoint." (".scalar localtime($breakpoint).")") if $self->{'verbose'};
+        $self->_insert_fake_event($result, $breakpoint);
+        shift(@{$self->{'breakpoints'}});
+        $breakpoint = $self->{'breakpoints'}->[0];
+    }
+
+
     # no end event yet, insert fake end event
     if($last_time < $self->{'report_options'}->{'end'}) {
         $self->_insert_fake_event($result, $self->{'report_options'}->{'end'});
@@ -714,6 +791,7 @@ sub _process_log_line {
                             },
             );
         }
+        return;
     }
 
     # timeperiod transitions
@@ -753,6 +831,7 @@ sub _process_log_line {
                             },
             );
         }
+        return;
     }
 
     # skip hosts we dont need
@@ -794,6 +873,7 @@ sub _process_log_line {
                                 'type'          => 'SERVICE '.$state_text.$hard,
                                 'plugin_output' => $data->{'plugin_output'},
                                 'class'         => $state_text,
+                                'in_downtime'   => $service_hist->{'in_downtime'},
                             },
                 ) unless $self->{'report_options'}->{'build_log'} == HOST_ONLY;
             }
@@ -824,6 +904,7 @@ sub _process_log_line {
                                 'type'          => 'SERVICE DOWNTIME '.$start,
                                 'plugin_output' => $plugin_output,
                                 'class'         => 'INDETERMINATE',
+                                'in_downtime'   => $service_hist->{'in_downtime'},
                             },
             ) unless $self->{'report_options'}->{'build_log'} == HOST_ONLY;
         }
@@ -853,6 +934,7 @@ sub _process_log_line {
                                 'type'          => 'HOST '.$state_text.$hard,
                                 'plugin_output' => $data->{'plugin_output'},
                                 'class'         => $state_text,
+                                'in_downtime'   => $host_hist->{'in_downtime'},
                             },
                 );
             }
@@ -894,6 +976,7 @@ sub _process_log_line {
                                 'type'          => 'HOST DOWNTIME '.$start,
                                 'plugin_output' => $plugin_output,
                                 'class'         => 'INDETERMINATE',
+                                'in_downtime'   => $host_hist->{'in_downtime'},
                             },
             );
         }
@@ -1048,7 +1131,7 @@ sub _add_time {
     $self->_log('_add_time() '.$type.' + '.$diff.' seconds ('.$self->_duration($diff).')') if $self->{'verbose'};
     $data->{$type} += $diff;
     if($in_downtime) {
-        $self->_log('_add_time() '.$type.' sched + '.$diff.' seconds') if $self->{'verbose'};
+        $self->_log('_add_time() '.$type.' scheduled + '.$diff.' seconds') if $self->{'verbose'};
         $data->{$scheduled_type} += $diff;
     }
 
@@ -1057,7 +1140,9 @@ sub _add_time {
         my($fmt, $timespan) = $self->_get_break_config();
         my $timestr = strftime($fmt, localtime($date-1));
         $data->{'breakdown'}->{$timestr}->{$type} += $diff;
+        $self->_log('_add_time() breakdown('.$timestr.') '.$type.' + '.$diff.' seconds ('.$self->_duration($diff).')') if $self->{'verbose'};
         if($in_downtime) {
+            $self->_log('_add_time() breakdown('.$timestr.') '.$type.' scheduled + '.$diff.' seconds ('.$self->_duration($diff).')') if $self->{'verbose'};
             $data->{'breakdown'}->{$timestr}->{$scheduled_type} += $diff;
         }
     }
@@ -1067,19 +1152,37 @@ sub _add_time {
 
 ########################################
 sub _log {
-    my $self = shift;
-    my $text = shift;
+    my($self, $text) = @_;
+    return 1 unless $self->{'verbose'};
 
-    if($self->{'verbose'} and defined $self->{'logger'}) {
-        if(ref $text ne '') {
-            $text = Dumper($text);
-        }
-        $self->{'logger'}->debug($text);
+    if(ref $text ne '') {
+        $Data::Dumper::Sortkeys = \&_logging_filter;
+        $text = Dumper($text);
     }
+    $self->{'logger'}->debug($text);
 
     return 1;
 }
 
+########################################
+sub _logging_filter {
+    my ($hash) = @_;
+    my @keys = keys %{$hash};
+    # filter a few keys we don't want to log
+    @keys = grep {!/^(state_string_2_int
+                      |logger
+                      |peer_addr
+                      |peer_name
+                      |peer_key
+                      |log_string
+                      |log_livestatus
+                      |log_file
+                      |log_dir
+                      |log_iterator
+                      |current_host_groups
+                )$/mx} @keys;
+    return \@keys;
+}
 ##############################################
 # calculate a duration in the
 # format: 0d 0h 29m 43s
@@ -1379,7 +1482,7 @@ sub _calculate_log {
     if($self->{'verbose'}) {
         $self->_log("#################################");
         $self->_log("LOG STORE:");
-        $self->_log(Dumper(\@{$self->{'full_log_store'}}));
+        $self->_log(\@{$self->{'full_log_store'}});
         $self->_log("#################################");
     }
 
@@ -1448,11 +1551,9 @@ sub _new_service_data {
     if($breakdown != BREAK_NONE) {
         $data->{'breakdown'} = {};
         my($fmt, $timespan) = $self->_get_break_config();
-        my $cur = $self->{'report_options'}->{'start'};
-        while($cur < $self->{'report_options'}->{'end'}) {
+        for my $cur (@{$self->{'breakpoints'}}) {
             my $timestr = strftime($fmt, localtime($cur));
             $data->{'breakdown'}->{$timestr} = $self->_new_service_data(BREAK_NONE);
-            $cur = $cur + $timespan;
         }
     }
     return $data;
@@ -1478,11 +1579,9 @@ sub _new_host_data {
     if($breakdown != BREAK_NONE) {
         $data->{'breakdown'} = {};
         my($fmt, $timespan) = $self->_get_break_config();
-        my $cur = $self->{'report_options'}->{'start'};
-        while($cur < $self->{'report_options'}->{'end'}) {
+        for my $cur (@{$self->{'breakpoints'}}) {
             my $timestr = strftime($fmt, localtime($cur));
             $data->{'breakdown'}->{$timestr} = $self->_new_host_data(BREAK_NONE);
-            $cur = $cur + $timespan;
         }
     }
     return $data;
@@ -1517,7 +1616,7 @@ sub _set_breakpoints {
     my $cur = $self->{'report_options'}->{'start'};
     # round to next 0:00
     my($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($cur);
-    $cur = mktime(0, 0, 0, $mday, $mon, $year, $wday, $yday, $isdst) + 86400;
+    $cur = mktime(0, 0, 0, $mday, $mon, $year, $wday, $yday, $isdst);
     while($cur < $self->{'report_options'}->{'end'}) {
         push @{$self->{'breakpoints'}}, $cur;
         $cur = $cur + 86400;
@@ -1532,6 +1631,13 @@ sub _set_breakpoints {
 =head1 BUGS
 
 Please report any bugs or feature requests to L<http://github.com/sni/Monitoring-Availability/issues>.
+
+=head1 DEBUGING
+
+You may enable the debug mode by setting MONITORING_AVAILABILITY_DEBUG environment variable.
+This will create a logfile: /tmp/Monitoring-Availability-Debug.log which gets overwritten with
+every calculation.
+You will need the Log4Perl module to create this logfile.
 
 =head1 SEE ALSO
 
