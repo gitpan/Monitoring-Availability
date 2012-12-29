@@ -8,7 +8,7 @@ use Carp;
 use POSIX qw(strftime mktime);
 use Monitoring::Availability::Logs;
 
-our $VERSION = '0.38';
+our $VERSION = '0.40';
 
 
 =head1 NAME
@@ -383,7 +383,6 @@ sub calculate {
     elsif(defined $self->{'report_options'}->{'log_iterator'}) {
         $self->_compute_availability_from_iterator($result, $self->{'report_options'}->{'log_iterator'});
     }
-
     return($result);
 }
 
@@ -632,13 +631,14 @@ sub _compute_availability_on_the_fly {
     # process all log lines we got
     # make sure our logs are sorted by time
     for my $data ( sort { $a->{'time'} <=> $b->{'time'} } @{$logs} ) {
+        eval {
+            $self->_compute_for_data($last_time,
+                                     Monitoring::Availability::Logs->_parse_livestatus_entry($data),
+                                     $result);
 
-        $self->_compute_for_data($last_time,
-                                 Monitoring::Availability::Logs->_parse_livestatus_entry($data),
-                                 $result);
-
-        # set timestamp of last log line
-        $last_time = $data->{'time'};
+            # set timestamp of last log line
+            $last_time = $data->{'time'};
+        }
     }
 
     # processing logfiles finished
@@ -1137,8 +1137,7 @@ sub _add_time {
 
     # breakdowns?
     if($self->{'report_options'}->{'breakdown'} != BREAK_NONE) {
-        my($fmt, $timespan) = $self->_get_break_config();
-        my $timestr = strftime($fmt, localtime($date-1));
+        my $timestr = $self->_get_break_timestr($date-1);
         $data->{'breakdown'}->{$timestr}->{$type} += $diff;
         $self->_log('_add_time() breakdown('.$timestr.') '.$type.' + '.$diff.' seconds ('.$self->_duration($diff).')') if $self->{'verbose'};
         if($in_downtime) {
@@ -1531,7 +1530,7 @@ sub _state_to_int {
 
 ########################################
 sub _new_service_data {
-    my($self, $breakdown) = @_;
+    my($self, $breakdown, $timestamp) = @_;
     my $data = {
         time_ok           => 0,
         time_warning      => 0,
@@ -1548,12 +1547,13 @@ sub _new_service_data {
         time_indeterminate_notrunning         => 0,
         time_indeterminate_outside_timeperiod => 0,
     };
+    $data->{'timestamp'} = $timestamp if $timestamp;
     if($breakdown != BREAK_NONE) {
         $data->{'breakdown'} = {};
-        my($fmt, $timespan) = $self->_get_break_config();
         for my $cur (@{$self->{'breakpoints'}}) {
-            my $timestr = strftime($fmt, localtime($cur));
-            $data->{'breakdown'}->{$timestr} = $self->_new_service_data(BREAK_NONE);
+            my $timestr = $self->_get_break_timestr($cur);
+            next if defined $data->{'breakdown'}->{$timestr};
+            $data->{'breakdown'}->{$timestr} = $self->_new_service_data(BREAK_NONE, $cur);
         }
     }
     return $data;
@@ -1561,7 +1561,7 @@ sub _new_service_data {
 
 ########################################
 sub _new_host_data {
-    my($self, $breakdown) = @_;
+    my($self, $breakdown, $timestamp) = @_;
     my $data = {
         time_up           => 0,
         time_down         => 0,
@@ -1576,34 +1576,46 @@ sub _new_host_data {
         time_indeterminate_notrunning         => 0,
         time_indeterminate_outside_timeperiod => 0,
     };
+    $data->{'timestamp'} = $timestamp if $timestamp;
     if($breakdown != BREAK_NONE) {
         $data->{'breakdown'} = {};
-        my($fmt, $timespan) = $self->_get_break_config();
         for my $cur (@{$self->{'breakpoints'}}) {
-            my $timestr = strftime($fmt, localtime($cur));
-            $data->{'breakdown'}->{$timestr} = $self->_new_host_data(BREAK_NONE);
+            my $timestr = $self->_get_break_timestr($cur);
+            next if defined $data->{'breakdown'}->{$timestr};
+            $data->{'breakdown'}->{$timestr} = $self->_new_host_data(BREAK_NONE, $cur);
         }
     }
     return $data;
 }
 
 ########################################
-sub _get_break_config {
-    my($self) = @_;
-    my($fmt, $timespan);
+sub _get_break_timestr {
+    my($self, $timestamp) = @_;
+
+    my @localtime = localtime($timestamp);
+
     if($self->{'report_options'}->{'breakdown'} == BREAK_DAYS) {
-        $fmt      = '%Y-%m-%d';
-        $timespan = 86400;
+        return strftime('%Y-%m-%d', @localtime);
     }
     elsif($self->{'report_options'}->{'breakdown'} == BREAK_WEEKS) {
-        $fmt      = '%Y-KW%V';
-        $timespan = 86400 * 7;
+        my $year = strftime('%Y', @localtime);
+        my $week = strftime('%W', @localtime);
+        if($week eq '00') {
+            $year--;
+            while($week eq '00') {
+                $week = 52;
+                $timestamp = $timestamp - 86400;
+                @localtime = localtime($timestamp);
+                $week = strftime('%W', @localtime);
+            }
+        }
+        return $year.'-WK'.$week;
     }
     elsif($self->{'report_options'}->{'breakdown'} == BREAK_MONTHS) {
-        $fmt      = '%Y-%m';
-        $timespan = 86400 * 30;
+        return strftime('%Y-%m', @localtime);
     }
-    return($fmt, $timespan);
+    die('huh?');
+    return;
 }
 
 ########################################
