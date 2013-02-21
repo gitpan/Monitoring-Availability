@@ -8,7 +8,7 @@ use Carp;
 use POSIX qw(strftime mktime);
 use Monitoring::Availability::Logs;
 
-our $VERSION = '0.40';
+our $VERSION = '0.42';
 
 
 =head1 NAME
@@ -533,7 +533,7 @@ sub _compute_for_data {
     my $result      = shift;
 
     # if we reach the start date of our report, insert a fake entry
-    if($last_time < $self->{'report_options'}->{'start'} and $data->{'time'} > $self->{'report_options'}->{'start'}) {
+    if($last_time < $self->{'report_options'}->{'start'} and $data->{'time'} >= $self->{'report_options'}->{'start'}) {
         $self->_insert_fake_event($result, $self->{'report_options'}->{'start'});
     }
 
@@ -1598,18 +1598,7 @@ sub _get_break_timestr {
         return strftime('%Y-%m-%d', @localtime);
     }
     elsif($self->{'report_options'}->{'breakdown'} == BREAK_WEEKS) {
-        my $year = strftime('%Y', @localtime);
-        my $week = strftime('%W', @localtime);
-        if($week eq '00') {
-            $year--;
-            while($week eq '00') {
-                $week = 52;
-                $timestamp = $timestamp - 86400;
-                @localtime = localtime($timestamp);
-                $week = strftime('%W', @localtime);
-            }
-        }
-        return $year.'-WK'.$week;
+        return strftime('%G-WK%V', @localtime);
     }
     elsif($self->{'report_options'}->{'breakdown'} == BREAK_MONTHS) {
         return strftime('%Y-%m', @localtime);
