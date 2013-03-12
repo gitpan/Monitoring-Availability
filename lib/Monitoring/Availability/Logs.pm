@@ -23,6 +23,24 @@ use constant {
     STOP_ERROR          => -1,
 };
 
+$Monitoring::Availability::Logs::host_states = {
+    'OK'                => 0,
+    'UP'                => 0,
+    'DOWN'              => 1,
+    'UNREACHABLE'       => 2,
+    'RECOVERY'          => 0,
+    'PENDING'           => 0,
+};
+
+$Monitoring::Availability::Logs::service_states = {
+    'OK'                => 0,
+    'WARNING'           => 1,
+    'CRITICAL'          => 2,
+    'UNKNOWN'           => 3,
+    'RECOVERY'          => 0,
+    'PENDING'           => 0,
+};
+
 =head1 NAME
 
 Monitoring::Availability::Logs - Load/Store/Access Logfiles
@@ -42,12 +60,12 @@ sub new {
     my(%options) = @_;
 
     my $self = {
-        'verbose'                        => 0,       # enable verbose output
-        'logger'                         => undef,   # logger object used for verbose output
-        'log_string'                     => undef,   # logs from string
-        'log_livestatus'                 => undef,   # logs from a livestatus query
-        'log_file'                       => undef,   # logs from a file
-        'log_dir'                        => undef,   # logs from a dir
+        'verbose'        => 0,       # enable verbose output
+        'logger'         => undef,   # logger object used for verbose output
+        'log_string'     => undef,   # logs from string
+        'log_livestatus' => undef,   # logs from a livestatus query
+        'log_file'       => undef,   # logs from a file
+        'log_dir'        => undef,   # logs from a dir
     };
 
     bless $self, $class;
@@ -98,6 +116,35 @@ sub get_logs {
     return($self->{'logs'});
 }
 
+########################################
+
+=head2 parse_line
+
+ parse_line($line)
+
+return parsed logfile line
+
+=cut
+
+sub parse_line {
+    return if substr($_[0], 0, 1, '') ne '[';
+    my $return = {
+        'time' => substr($_[0], 0, 10, '')
+    };
+    substr($_[0], 0, 2, '');
+
+    ($return->{'type'},$_[0]) = split(/:\ /mxo, $_[0], 2);
+    if(!$_[0]) {
+        # extract starts/stops
+        &_set_from_type($return);
+        return $return;
+    }
+
+    # extract more information from our options
+    &_set_from_options($return->{'type'}, $return, $_[0]);
+
+    return $return;
+}
 
 ########################################
 # INTERNAL SUBS
@@ -106,8 +153,8 @@ sub _store_logs_from_string {
     my $self   = shift;
     my $string = shift;
     return unless defined $string;
-    for my $line (split/\n/mx, $string) {
-        my $data = $self->_parse_line($line);
+    for my $line (split/\n/mxo, $string) {
+        my $data = &parse_line($line);
         push @{$self->{'logs'}}, $data if defined $data;
     }
     return 1;
@@ -122,7 +169,7 @@ sub _store_logs_from_file {
     open(my $FH, '<', $file) or croak('cannot read file '.$file.': '.$!);
     while(my $line = <$FH>) {
         chomp($line);
-        my $data = $self->_parse_line($line);
+        my $data = &parse_line($line);
         push @{$self->{'logs'}}, $data if defined $data;
     }
     close($FH);
@@ -138,7 +185,7 @@ sub _store_logs_from_dir {
 
     opendir(my $dh, $dir) or croak('cannot open directory '.$dir.': '.$!);
     while(my $file = readdir($dh)) {
-        if($file =~ m/\.log$/mx) {
+        if($file =~ m/\.log$/mxo) {
             $self->_store_logs_from_file($dir.'/'.$file);
         }
     }
@@ -161,119 +208,80 @@ sub _store_logs_from_livestatus {
 
 ########################################
 sub _parse_livestatus_entry {
-    my $self   = shift;
-    my $entry  = shift;
+    my($self, $entry) = @_;
 
-    my $string = $entry->{'options'} || '';
+    my $string = $entry->{'message'} || $entry->{'options'} || '';
     if($string eq '') {
         # extract starts/stops
-        $self->_set_from_type($entry, $string);
+        &_set_from_type($entry, $string);
         return $entry;
     }
 
     # extract more information from our options
-    $self->_set_from_options($entry, $string);
+    if($entry->{'message'}) {
+        return &parse_line($string);
+    } else {
+        &_set_from_options($entry->{'type'}, $entry, $string);
+    }
 
     return $entry;
 }
 
 ########################################
-sub _parse_line {
-    my $self   = shift;
-    my $string = shift;
-    my $return = {
-        'time' => '',
-        'type' => '',
-    };
-
-    return if substr($string, 0, 1, '') ne '[';
-    $return->{'time'} = substr($string, 0, 10, '');
-    return if substr($string, 0, 2, '') ne '] ';
-
-    $return->{'type'} = $self->_strtok($string, ': ');
-    if(!defined $string) {
-        # extract starts/stops
-        $self->_set_from_type($return, $string);
-        return $return;
-    }
-
-    # extract more information from our options
-    $self->_set_from_options($return, $string);
-
-    return $return;
-}
-
-########################################
-# search for a token and return first occurance, trim that part from string
-sub _strtok {
-    return '' unless defined $_[1];
-    my $index = index($_[1], $_[2]);
-    if($index != -1) {
-        my $value = substr($_[1], 0, $index, '');
-        substr($_[1], 0, length($_[2]), '');
-        return($value);
-    }
-
-    my $value = $_[1];
-    undef $_[1];
-
-    # seperator not found
-    return($value);
-}
-
-########################################
 sub _set_from_options {
-    my $self   = shift;
-    my $data   = shift;
-    my $string = shift;
-
-    # Host States
-    if(   $data->{'type'} eq 'HOST ALERT'
-       or $data->{'type'} eq 'CURRENT HOST STATE'
-       or $data->{'type'} eq 'INITIAL HOST STATE'
-    ) {
-        $data->{'host_name'}     = $self->_strtok($string, ';');
-        $data->{'state'}         = $self->_statestr_to_state($self->_strtok($string, ';'));
-        return unless defined $data->{'state'};
-        $data->{'hard'}          = $self->_softstr_to_hard($self->_strtok($string, ';'));
-                                   $self->_strtok($string, ';');
-        $data->{'plugin_output'} = $self->_strtok($string, ';');
-    }
+    my($type, $data, $string) = @_;
 
     # Service States
-    elsif(   $data->{'type'} eq 'SERVICE ALERT'
-       or $data->{'type'} eq 'CURRENT SERVICE STATE'
-       or $data->{'type'} eq 'INITIAL SERVICE STATE'
+    if(   $type eq 'SERVICE ALERT'
+       or $type eq 'CURRENT SERVICE STATE'
+       or $type eq 'INITIAL SERVICE STATE'
     ) {
-        $data->{'host_name'}           = $self->_strtok($string, ';');
-        $data->{'service_description'} = $self->_strtok($string, ';');
-        $data->{'state'}               = $self->_statestr_to_state($self->_strtok($string, ';'));
+        my @tmp = split(/;/mxo, $string,6); # regex is faster than strtok here
+        $data->{'host_name'}           = $tmp[0];
+        $data->{'service_description'} = $tmp[1];
+        $data->{'state'}               = $Monitoring::Availability::Logs::service_states->{$tmp[2]};
         return unless defined $data->{'state'};
-        $data->{'hard'}                = $self->_softstr_to_hard($self->_strtok($string, ';'));
-                                         $self->_strtok($string, ';');
-        $data->{'plugin_output'}       = $self->_strtok($string, ';');
+        $data->{'hard'}                = $tmp[3] eq 'HARD' ? 1 : 0;
+        $data->{'plugin_output'}       = $tmp[5];
     }
 
+    # Host States
+    elsif(   $type eq 'HOST ALERT'
+       or $type eq 'CURRENT HOST STATE'
+       or $type eq 'INITIAL HOST STATE'
+    ) {
+        my @tmp = split(/;/mxo, $string,5); # regex is faster than strtok here
+        $data->{'host_name'}     = $tmp[0];
+        $data->{'state'}         = $Monitoring::Availability::Logs::host_states->{$tmp[1]};
+        return unless defined $data->{'state'};
+        $data->{'hard'}          = $tmp[2] eq 'HARD' ? 1 : 0;
+        $data->{'plugin_output'} = $tmp[4];
+    }
+
+
     # Host Downtimes
-    elsif($data->{'type'} eq 'HOST DOWNTIME ALERT') {
-        $data->{'host_name'} = $self->_strtok($string, ';');
-        $data->{'start'}     = $self->_startstr_to_start($self->_strtok($string, ';'));
+    elsif($type eq 'HOST DOWNTIME ALERT') {
+        my @tmp = split(/;/mxo, $string,3); # regex is faster than strtok here
+        $data->{'host_name'} = $tmp[0];
+        $data->{'start'}     = $tmp[1] eq 'STARTED' ? 1 : 0;
     }
 
     # Service Downtimes
-    elsif($data->{'type'} eq 'SERVICE DOWNTIME ALERT') {
-        $data->{'host_name'}           = $self->_strtok($string, ';');
-        $data->{'service_description'} = $self->_strtok($string, ';');
-        $data->{'start'}               = $self->_startstr_to_start($self->_strtok($string, ';'));
+    elsif($type eq 'SERVICE DOWNTIME ALERT') {
+        my @tmp = split(/;/mxo, $string,4); # regex is faster than strtok here
+        $data->{'host_name'}           = $tmp[0];
+        $data->{'service_description'} = $tmp[1];
+        $data->{'start'}               = $tmp[2] eq 'STARTED' ? 1 : 0;
     }
 
     # Timeperiod Transitions
     # livestatus does not parse this correct, so we have to use regex
-    elsif($data->{'type'} =~ m/^TIMEPERIOD\ TRANSITION/mx) {
+    elsif($type =~ m/^TIMEPERIOD\ TRANSITION/mxo) {
+        my @tmp = split(/;/mxo, $string,3); # regex is faster than strtok here
         $data->{'type'}       = 'TIMEPERIOD TRANSITION';
-        $data->{'timeperiod'} = $self->_strtok($string, ';');
-        $data->{'from'}       = $self->_strtok($string, ';');
-        $data->{'to'}         = $self->_strtok($string, ';');
+        $data->{'timeperiod'} = $tmp[0];
+        $data->{'from'}       = $tmp[1];
+        $data->{'to'}         = $tmp[2];
     }
 
     return 1;
@@ -281,65 +289,26 @@ sub _set_from_options {
 
 ########################################
 sub _set_from_type {
-    my $self   = shift;
-    my $data   = shift;
-    my $string = shift;
+    my($data) = @_;
 
     # program starts
-    if($data->{'type'} =~ m/\ starting\.\.\./mx) {
+    if($data->{'type'} =~ m/\ starting\.\.\./mxo) {
         $data->{'proc_start'} = START_NORMAL;
     }
-    elsif($data->{'type'} =~ m/\ restarting\.\.\./mx) {
+    elsif($data->{'type'} =~ m/\ restarting\.\.\./mxo) {
         $data->{'proc_start'} = START_RESTART;
     }
 
     # program stops
-    elsif($data->{'type'} =~ m/shutting\ down\.\.\./mx) {
+    elsif($data->{'type'} =~ m/shutting\ down\.\.\./mxo) {
         $data->{'proc_start'} = STOP_NORMAL;
     }
-    elsif($data->{'type'} =~ m/Bailing\ out/mx) {
+    elsif($data->{'type'} =~ m/Bailing\ out/mxo) {
         $data->{'proc_start'} = STOP_ERROR;
     }
 
     return 1;
 }
-
-########################################
-sub _startstr_to_start {
-    my $self   = shift;
-    my $string = shift;
-
-    return 1 if $string eq 'STARTED';
-    return 0;
-}
-
-########################################
-sub _softstr_to_hard {
-    my $self   = shift;
-    my $string = shift;
-
-    return 1 if $string eq 'HARD';
-    return 0;
-}
-
-########################################
-sub _statestr_to_state {
-    my $self   = shift;
-    my $string = shift;
-
-    return 0 if $string eq 'UP';
-    return 0 if $string eq 'OK';
-    return 1 if $string eq 'WARNING';
-    return 1 if $string eq 'DOWN';
-    return 2 if $string eq 'CRITICAL';
-    return 2 if $string eq 'UNREACHABLE';
-    return 3 if $string eq 'UNKNOWN';
-    return 0 if $string eq 'RECOVERY';
-    return 0 if $string eq 'PENDING';
-    die("unknown state: $string");
-    return;
-}
-
 
 ########################################
 
